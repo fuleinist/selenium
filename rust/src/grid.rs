@@ -319,24 +319,46 @@ impl SeleniumManager for GridManager {
 
     // The shared cache lookup takes the last file of a lexicographic walk, so
     // it ranks 4.9.0 above 4.54.0. This manager compares the version in each
-    // jar's parent directory instead.
+    // jar's parent directory instead. A nightly jar lives in a version
+    // directory with a SNAPSHOT suffix, so that suffix must not drop it.
     fn find_best_driver_from_cache(&self) -> Result<Option<PathBuf>, Error> {
         let cache_path = self.get_cache_path()?.unwrap_or_default();
         let jars = collect_files_from_cache(&cache_path, |entry| self.is_driver(entry));
+        let want_snapshot = self.is_nightly(self.get_driver_version());
 
-        let mut best: Option<(Vec<u64>, PathBuf)> = None;
+        let mut best: Option<((Vec<u64>, bool), PathBuf)> = None;
+        let mut best_snapshot: Option<((Vec<u64>, bool), PathBuf)> = None;
         for jar in jars {
             let Some(version) = jar.parent().and_then(version_from_dir_name) else {
                 continue;
             };
 
             let is_newer = match &best {
-                Some((best_version, _)) => version > *best_version,
+                Some((best_version, _)) => &version > best_version,
                 None => true,
             };
 
             if is_newer {
-                best = Some((version, jar));
+                best = Some((version.clone(), jar.clone()));
+            }
+
+            if version.1 {
+                let is_newer_snapshot = match &best_snapshot {
+                    Some((best_version, _)) => &version > best_version,
+                    None => true,
+                };
+
+                if is_newer_snapshot {
+                    best_snapshot = Some((version, jar));
+                }
+            }
+        }
+
+        // A nightly request must use its cached snapshot, even when a newer
+        // stable jar is also in the cache.
+        if want_snapshot {
+            if let Some((_, jar)) = best_snapshot {
+                return Ok(Some(jar));
             }
         }
 
@@ -353,9 +375,24 @@ impl SeleniumManager for GridManager {
     }
 }
 
-fn version_from_dir_name(dir: &Path) -> Option<Vec<u64>> {
+// A cache directory is named after the version, for example "4.54.0" or, for
+// a nightly build, "4.54.0-SNAPSHOT". Return the numeric parts and a flag
+// that marks a snapshot, so a nightly jar still takes part in the ranking.
+fn version_from_dir_name(dir: &Path) -> Option<(Vec<u64>, bool)> {
     let name = dir.file_name()?.to_str()?;
-    name.split('.')
+    let (numeric, is_snapshot) = match name.strip_suffix(SNAPSHOT) {
+        Some(prefix) => (prefix.trim_end_matches(|c| c == '-' || c == '.'), true),
+        None => (name, false),
+    };
+
+    let parts = numeric
+        .split('.')
         .map(|part| part.parse::<u64>().ok())
-        .collect()
+        .collect::<Option<Vec<u64>>>()?;
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    Some((parts, is_snapshot))
 }

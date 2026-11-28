@@ -182,3 +182,107 @@ fn grid_cache_fallback_prefers_newest_version_test() {
         "the offline fallback returned an older Grid jar"
     );
 }
+
+fn write_cached_grid_jar(cache: &Path, version: &str) {
+    let jar_dir = cache.join("grid").join(version);
+    fs::create_dir_all(&jar_dir).unwrap();
+    fs::write(
+        jar_dir.join(format!("selenium-server-{version}.jar")),
+        b"fake jar",
+    )
+    .unwrap();
+}
+
+#[test]
+fn grid_cache_fallback_ranks_nightly_jar_test() {
+    let tmp = tempdir().unwrap();
+    let cache = tmp.path().to_path_buf();
+    // A nightly jar lives in a version directory with a SNAPSHOT suffix. The
+    // newer nightly jar must win, and it must not be skipped as unparseable.
+    write_cached_grid_jar(&cache, "4.54.0");
+    write_cached_grid_jar(&cache, "4.55.0-SNAPSHOT");
+
+    let mut manager = GridManager::new("latest".to_string()).unwrap();
+    manager.set_cache_path(cache.to_str().unwrap().to_string());
+
+    let found = manager.find_best_driver_from_cache().unwrap();
+    assert!(found.is_some(), "the cached Grid jar was not found");
+    assert!(
+        found
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("selenium-server-4.55.0-SNAPSHOT.jar"),
+        "the offline fallback skipped the newer nightly jar"
+    );
+}
+
+#[test]
+fn grid_cache_fallback_prefers_snapshot_of_same_version_test() {
+    let tmp = tempdir().unwrap();
+    let cache = tmp.path().to_path_buf();
+    // The walk visits "4.54.0" before "4.54.0-SNAPSHOT". A snapshot of the
+    // same numeric version is the newer build, so it must win the tie.
+    write_cached_grid_jar(&cache, "4.54.0");
+    write_cached_grid_jar(&cache, "4.54.0-SNAPSHOT");
+
+    let mut manager = GridManager::new("latest".to_string()).unwrap();
+    manager.set_cache_path(cache.to_str().unwrap().to_string());
+
+    let found = manager.find_best_driver_from_cache().unwrap();
+    assert!(found.is_some(), "the cached Grid jar was not found");
+    assert!(
+        found
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("selenium-server-4.54.0-SNAPSHOT.jar"),
+        "the snapshot of the same version did not win the tie"
+    );
+}
+
+#[test]
+fn grid_cache_fallback_nightly_request_prefers_snapshot_test() {
+    let tmp = tempdir().unwrap();
+    let cache = tmp.path().to_path_buf();
+    // A nightly request must not run a newer stable release from the cache.
+    write_cached_grid_jar(&cache, "4.60.0");
+    write_cached_grid_jar(&cache, "4.54.0-SNAPSHOT");
+
+    let mut manager = GridManager::new(NIGHTLY.to_string()).unwrap();
+    manager.set_cache_path(cache.to_str().unwrap().to_string());
+
+    let found = manager.find_best_driver_from_cache().unwrap();
+    assert!(found.is_some(), "the cached Grid jar was not found");
+    assert!(
+        found
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("selenium-server-4.54.0-SNAPSHOT.jar"),
+        "a nightly request ran a stable Grid jar from the cache"
+    );
+}
+
+#[test]
+fn grid_cache_fallback_nightly_request_without_snapshot_test() {
+    let tmp = tempdir().unwrap();
+    let cache = tmp.path().to_path_buf();
+    // Negative control: with no nightly jar cached, the nightly request must
+    // still return the newest stable jar instead of nothing.
+    write_cached_grid_jar(&cache, "4.60.0");
+
+    let mut manager = GridManager::new(NIGHTLY.to_string()).unwrap();
+    manager.set_cache_path(cache.to_str().unwrap().to_string());
+
+    let found = manager.find_best_driver_from_cache().unwrap();
+    assert!(found.is_some(), "the cached Grid jar was not found");
+    assert!(
+        found
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("selenium-server-4.60.0.jar"),
+        "the nightly request did not fall back to the stable jar"
+    );
+}
